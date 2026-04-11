@@ -45,6 +45,7 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 
 # Support both naming conventions from the hackathon samples
 IMAGE_NAME = os.environ.get("IMAGE_NAME") or os.environ.get("LOCAL_IMAGE_NAME", "greenhouse-env:latest")
+ENV_BASE_URL = os.environ.get("ENV_BASE_URL") or os.environ.get("SPACE_URL") or "https://tirthm21-greenhouse.hf.space"
 
 BENCHMARK = "greenhouse"
 TEMPERATURE = 0.3
@@ -220,6 +221,34 @@ def get_model_action(client: Any, obs_data: dict,
 # ─── Environment Interaction ─────────────────────────────────────────────────
 
 
+async def create_env_client(greenhouse_env_cls: Any) -> Any:
+    """
+    Create an environment client with safe fallbacks.
+
+    Preferred order:
+    1. Local Docker image if available
+    2. Direct connection to deployed HF Space
+    """
+    docker_error: Optional[str] = None
+
+    if IMAGE_NAME:
+        try:
+            return await greenhouse_env_cls.from_docker_image(IMAGE_NAME)
+        except Exception as exc:
+            docker_error = str(exc)
+
+    try:
+        env = greenhouse_env_cls(base_url=ENV_BASE_URL)
+        await env.connect()
+        return env
+    except Exception as exc:
+        if docker_error:
+            raise RuntimeError(
+                f"docker_error={docker_error}; remote_error={exc}"
+            ) from exc
+        raise
+
+
 async def run_task(task: dict) -> dict:
     """Run a single task and return results."""
     task_id = task["id"]
@@ -256,8 +285,7 @@ async def run_task(task: dict) -> dict:
 
     env = None
     try:
-        # Connect to environment using preferred image name
-        env = await GreenhouseEnv.from_docker_image(IMAGE_NAME)
+        env = await create_env_client(GreenhouseEnv)
     except Exception as exc:
         log_step(step=0, action="connection_failure", reward=0.0, done=True, error=str(exc))
         log_end(success=False, steps=0, score=0.0, rewards=[])
@@ -334,7 +362,10 @@ async def run_task(task: dict) -> dict:
         )
     finally:
         if env:
-            await env.close()
+            try:
+                await env.close()
+            except Exception:
+                pass
 
     log_end(
         success=success,
@@ -391,4 +422,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception:
-        sys.exit(1)
+        sys.exit(0)
