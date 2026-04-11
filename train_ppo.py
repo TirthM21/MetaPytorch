@@ -16,6 +16,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from server.greenhouse_environment import GreenhouseEnvironment
 from models import GreenhouseAction
 
+TASKS = [
+    "maintain_temperature",
+    "optimize_growth",
+    "weather_resilience",
+    "resource_efficiency_master",
+]
+
 # ─── Gym Wrapper ─────────────────────────────────────────────────────────────
 
 class GreenhouseGymEnv(gym.Env):
@@ -147,11 +154,8 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default="maintain_temperature", choices=TASKS)
     parser.add_argument("--steps", type=int, default=50000)
     parser.add_argument("--output", type=str, default="ppo_greenhouse_model")
-    
-    # Add TASKS constant if it doesn't exist to avoid error
-    TASKS = ["maintain_temperature", "optimize_growth", "weather_resilience"]
-    
+
     args = parser.parse_args()
-    
+
     # Start training
     train(args.task, args.steps, args.output)

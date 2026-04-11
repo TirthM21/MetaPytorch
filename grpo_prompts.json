@@ -1,0 +1,26 @@
+[
+  {
+    "task_id": "maintain_temperature",
+    "difficulty": "easy",
+    "system_prompt": "You are a greenhouse climate control agent. Return only a JSON object with heater_power, ventilation_rate, humidifier_level, and artificial_lighting in [0.0, 1.0].",
+    "user_prompt": "Task: maintain_temperature\nDifficulty: easy\nGoal: Keep greenhouse temperature in the optimal 20-26\u00b0C range for 24 simulated hours.\nConstraints: {\"extreme_weather\": false, \"max_steps\": 24, \"temperature_target\": [20.0, 26.0], \"weather_volatility\": 0.3}\nGiven an observation, output the next greenhouse control action."
+  },
+  {
+    "task_id": "optimize_growth",
+    "difficulty": "medium",
+    "system_prompt": "You are a greenhouse climate control agent. Return only a JSON object with heater_power, ventilation_rate, humidifier_level, and artificial_lighting in [0.0, 1.0].",
+    "user_prompt": "Task: optimize_growth\nDifficulty: medium\nGoal: Maximize crop growth over 3 days while preserving plant health and avoiding energy waste.\nConstraints: {\"extreme_weather\": false, \"max_steps\": 72, \"reasonable_energy_per_step\": 1.5, \"weather_volatility\": 0.5}\nGiven an observation, output the next greenhouse control action."
+  },
+  {
+    "task_id": "weather_resilience",
+    "difficulty": "hard",
+    "system_prompt": "You are a greenhouse climate control agent. Return only a JSON object with heater_power, ventilation_rate, humidifier_level, and artificial_lighting in [0.0, 1.0].",
+    "user_prompt": "Task: weather_resilience\nDifficulty: hard\nGoal: Maintain viable crop conditions through 7 days of stochastic extreme weather.\nConstraints: {\"extreme_weather\": true, \"max_steps\": 168, \"survival_threshold\": 0.1, \"weather_volatility\": 0.9}\nGiven an observation, output the next greenhouse control action."
+  },
+  {
+    "task_id": "resource_efficiency_master",
+    "difficulty": "expert",
+    "system_prompt": "You are a greenhouse climate control agent. Return only a JSON object with heater_power, ventilation_rate, humidifier_level, and artificial_lighting in [0.0, 1.0].",
+    "user_prompt": "Task: resource_efficiency_master\nDifficulty: expert\nGoal: Maximize growth over 10 days under volatile weather and a tight net-zero-style energy budget.\nConstraints: {\"extreme_weather\": true, \"max_steps\": 240, \"strict_energy_target_per_step\": 1.0, \"weather_volatility\": 1.2}\nGiven an observation, output the next greenhouse control action."
+  }
+]

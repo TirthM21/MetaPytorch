@@ -27,11 +27,13 @@ from openenv.core.env_server.interfaces import Environment
 
 try:
     from ..models import GreenhouseAction, GreenhouseObservation, GreenhouseState
+    from .task_registry import TASK_CONFIGS, REWARD_WEIGHTS, get_openenv_tasks
 except ImportError:
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from models import GreenhouseAction, GreenhouseObservation, GreenhouseState
+    from server.task_registry import TASK_CONFIGS, REWARD_WEIGHTS, get_openenv_tasks
 
 
 # ─── Optimal crop ranges ────────────────────────────────────────────────────
@@ -62,78 +64,6 @@ VENTILATION_ENERGY_KWH = 0.3
 HUMIDIFIER_ENERGY_KWH = 0.2
 LIGHTING_ENERGY_KWH = 1.5
 ENERGY_PRICE_PER_KWH = 0.15  # $/kWh
-
-# ─── Task configurations ────────────────────────────────────────────────────
-TASK_CONFIGS = {
-    "maintain_temperature": {
-        "max_steps": 24,
-        "description": "Keep greenhouse temperature in 20-26°C optimal range for 24 hours.",
-        "difficulty": "easy",
-        "grader": True,
-        "extreme_weather": False,
-        "weather_volatility": 0.3,
-    },
-    "optimize_growth": {
-        "max_steps": 72,
-        "description": "Maximize crop growth over 3 days while minimizing energy consumption.",
-        "difficulty": "medium",
-        "grader": True,
-        "extreme_weather": False,
-        "weather_volatility": 0.5,
-    },
-    "weather_resilience": {
-        "max_steps": 168,
-        "description": "Maintain all optimal conditions through 7 days of extreme weather events.",
-        "difficulty": "hard",
-        "grader": True,
-        "extreme_weather": True,
-        "weather_volatility": 0.9,
-    },
-    "resource_efficiency_master": {
-        "max_steps": 240,
-        "description": "Maximize growth over 10 days while adhering to a strict Net Zero energy budget.",
-        "difficulty": "expert",
-        "grader": True,
-        "extreme_weather": True,
-        "weather_volatility": 1.2,
-    },
-}
-
-# ─── Reward weights per task ────────────────────────────────────────────────
-REWARD_WEIGHTS = {
-    "maintain_temperature": {
-        "temperature": 0.7,
-        "humidity": 0.1,
-        "light": 0.05,
-        "co2": 0.05,
-        "energy": 0.05,
-        "stability": 0.05,
-    },
-    "optimize_growth": {
-        "temperature": 0.25,
-        "humidity": 0.2,
-        "light": 0.15,
-        "co2": 0.1,
-        "energy": 0.15,
-        "stability": 0.15,
-    },
-    "weather_resilience": {
-        "temperature": 0.2,
-        "humidity": 0.2,
-        "light": 0.15,
-        "co2": 0.1,
-        "energy": 0.1,
-        "stability": 0.25,
-    },
-    "resource_efficiency_master": {
-        "temperature": 0.3,
-        "humidity": 0.1,
-        "light": 0.1,
-        "co2": 0.1,
-        "energy": 0.3,
-        "stability": 0.1,
-    },
-}
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -182,17 +112,7 @@ class GreenhouseEnvironment(Environment):
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
     TASK_IDS: List[str] = list(TASK_CONFIGS.keys())
-    TASKS: List[Dict[str, Any]] = [
-        {
-            "id": task_id,
-            "difficulty": config["difficulty"],
-            "description": config["description"],
-            "grader": bool(config.get("grader", False)),
-            "max_steps": config["max_steps"],
-            "score_range": {"min_exclusive": 0.0, "max_exclusive": 1.0},
-        }
-        for task_id, config in TASK_CONFIGS.items()
-    ]
+    TASKS: List[Dict[str, Any]] = get_openenv_tasks()
 
     def __init__(self, task_id: str = "maintain_temperature"):
         """Initialize the greenhouse environment."""
@@ -236,6 +156,7 @@ class GreenhouseEnvironment(Environment):
         # Per-step tracking for graders
         self._step_scores: List[float] = []
         self._temp_in_range_count: int = 0
+        self._episode_trace: List[Dict[str, float]] = []
 
         # Random seed for reproducibility within an episode
         self._rng = random.Random()
@@ -309,6 +230,7 @@ class GreenhouseEnvironment(Environment):
         # Grading
         self._step_scores = []
         self._temp_in_range_count = 0
+        self._episode_trace = []
 
         return self._build_observation(
             energy_step=0.0,
@@ -385,6 +307,16 @@ class GreenhouseEnvironment(Environment):
         self._step_scores.append(reward)
         if OPTIMAL_TEMP_MIN <= self._temperature <= OPTIMAL_TEMP_MAX:
             self._temp_in_range_count += 1
+        self._episode_trace.append(
+            {
+                "reward": reward,
+                "temperature": self._temperature,
+                "humidity": self._humidity,
+                "plant_health": self._plant_health,
+                "growth_progress": self._growth_progress,
+                "energy_step": energy_step,
+            }
+        )
 
         # ── Step 8: Check termination ───────────────────────────────
         done = (
@@ -419,9 +351,12 @@ class GreenhouseEnvironment(Environment):
 
         # If done, compute final grader score and attach to metadata
         if done:
-            grader_score = self.grader()
+            grader_payload = self.grader()
             obs.metadata = obs.metadata or {}
-            obs.metadata["grader_score"] = round(grader_score, 4)
+            obs.metadata["grader_score"] = round(grader_payload["score"], 4)
+            obs.metadata["grader_breakdown"] = grader_payload["breakdown"]
+            obs.metadata["grader_components"] = grader_payload["components"]
+            obs.metadata["governance"] = grader_payload["governance"]
             obs.metadata["task_id"] = self._task_id
             obs.metadata["final"] = True
 
@@ -752,9 +687,9 @@ class GreenhouseEnvironment(Environment):
 
     # ─── Grader ──────────────────────────────────────────────────────────────
 
-    def grader(self, task_id: Optional[str] = None) -> float:
+    def grader(self, task_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Compute the final grader score for the episode (0.0 – 1.0).
+        Compute the final grader score and structured breakdown for the episode.
 
         Grading criteria vary by task:
             - maintain_temperature: fraction of steps with temp in optimal range
@@ -765,82 +700,125 @@ class GreenhouseEnvironment(Environment):
         """
         target_task = task_id if task_id in TASK_CONFIGS else self._task_id
         config = TASK_CONFIGS[target_task]
-        
         max_steps = config["max_steps"]
         steps_taken = self._state.step_count
 
+        def finalize(raw_score: float, components: Dict[str, float]) -> Dict[str, Any]:
+            normalized_components = {
+                key: round(_clamp(value, 0.0, 1.0), 4)
+                for key, value in components.items()
+            }
+            score = 0.01 + 0.98 * _clamp(raw_score, 0.0, 1.0)
+            governance = {
+                "score_range": "(0, 1)",
+                "strictly_positive": True,
+                "strictly_below_one": True,
+                "steps_taken": steps_taken,
+                "max_steps": max_steps,
+            }
+            return {
+                "score": score,
+                "breakdown": {
+                    "task_id": target_task,
+                    "difficulty": config["difficulty"],
+                    "raw_score": round(_clamp(raw_score, 0.0, 1.0), 4),
+                    "normalized_score": round(score, 4),
+                },
+                "components": normalized_components,
+                "governance": governance,
+            }
+
         if steps_taken == 0:
-            return 0.01
+            return finalize(
+                0.0,
+                {
+                    "progress_ratio": 0.0,
+                    "health": self._plant_health,
+                    "growth": self._growth_progress,
+                },
+            )
 
         if target_task == "maintain_temperature":
-            # Score = fraction of steps temperature was in optimal range
-            score = self._temp_in_range_count / max(steps_taken, 1)
-            return 0.01 + 0.98 * _clamp(score, 0.0, 1.0)
+            temp_ratio = self._temp_in_range_count / max(steps_taken, 1)
+            return finalize(
+                temp_ratio,
+                {
+                    "temperature_band_ratio": temp_ratio,
+                    "average_reward": sum(self._step_scores) / max(len(self._step_scores), 1),
+                    "progress_ratio": steps_taken / max_steps,
+                },
+            )
 
         elif target_task == "optimize_growth":
-            # Growth quality weighted by energy efficiency and avg step quality
             growth_score = self._growth_progress
-
-            # Average per-step reward reflects ongoing condition quality
             avg_reward = sum(self._step_scores) / max(len(self._step_scores), 1)
-
-            # Energy efficiency: compare to a "reasonable" baseline (1.5 kWh/step)
-            reasonable_energy = max_steps * 1.5
+            reasonable_energy = max_steps * config.get("reasonable_energy_per_step", 1.5)
             energy_ratio = self._total_energy / max(reasonable_energy, 0.01)
-            # Penalty starts when energy exceeds 50% of max possible
             energy_penalty = _clamp((energy_ratio - 0.5) * 0.4, 0.0, 0.4)
-
             health_factor = self._plant_health
 
-            score = (
+            raw_score = (
                 0.40 * growth_score
                 + 0.35 * avg_reward
                 + 0.25 * health_factor
             ) * (1.0 - energy_penalty)
-            return 0.01 + 0.98 * _clamp(score, 0.0, 1.0)
+            return finalize(
+                raw_score,
+                {
+                    "growth": growth_score,
+                    "average_reward": avg_reward,
+                    "health": health_factor,
+                    "energy_penalty": 1.0 - energy_penalty,
+                },
+            )
 
         elif target_task == "weather_resilience":
-            # Multi-factor grading
             health_score = self._plant_health
             growth_score = self._growth_progress
-
-            # Average per-step reward as quality metric
             avg_reward = sum(self._step_scores) / max(len(self._step_scores), 1)
+            survival = 1.0 if self._plant_health > config.get("survival_threshold", 0.1) else 0.0
 
-            # Survival bonus (finished alive)
-            survival = 1.0 if self._plant_health > 0.1 else 0.0
-
-            score = (
+            raw_score = (
                 0.30 * health_score
                 + 0.25 * growth_score
                 + 0.25 * avg_reward
                 + 0.20 * survival
             )
-            return 0.01 + 0.98 * _clamp(score, 0.0, 1.0)
+            return finalize(
+                raw_score,
+                {
+                    "health": health_score,
+                    "growth": growth_score,
+                    "average_reward": avg_reward,
+                    "survival": survival,
+                },
+            )
             
         elif target_task == "resource_efficiency_master":
-            # Multi-factor grading with emphasis on energy
             health_score = self._plant_health
             growth_score = self._growth_progress
-
-            # Average per-step reward
             avg_reward = sum(self._step_scores) / max(len(self._step_scores), 1)
-
-            # Strict energy efficiency: compare to target (1.0 kWh/step)
-            strict_energy_target = max_steps * 1.0
+            strict_energy_target = max_steps * config.get("strict_energy_target_per_step", 1.0)
             energy_ratio = self._total_energy / max(strict_energy_target, 0.01)
-            # Steep penalty for exceeding budget
             energy_score = _clamp(1.2 - energy_ratio, 0.0, 1.0)
 
-            score = (
+            raw_score = (
                 0.35 * growth_score
                 + 0.30 * energy_score
                 + 0.20 * health_score
                 + 0.15 * avg_reward
             )
-            return 0.01 + 0.98 * _clamp(score, 0.0, 1.0)
+            return finalize(
+                raw_score,
+                {
+                    "growth": growth_score,
+                    "energy_efficiency": energy_score,
+                    "health": health_score,
+                    "average_reward": avg_reward,
+                },
+            )
 
-        return 0.01
+        return finalize(0.0, {"fallback": 0.0})
 
     # ─── Observation Building ────────────────────────────────────────────────
 
@@ -898,6 +876,11 @@ class GreenhouseEnvironment(Environment):
                 "step": self._state.step_count,
                 "task": self._task_id,
                 "difficulty": self._config["difficulty"],
+                "task_constraints": {
+                    "max_steps": self._config["max_steps"],
+                    "weather_volatility": self._config["weather_volatility"],
+                    "extreme_weather": self._config["extreme_weather"],
+                },
             },
         )
 

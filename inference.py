@@ -8,7 +8,7 @@
 """
 Greenhouse Climate Control — Baseline Inference Script.
 
-Runs an LLM agent against the Greenhouse Environment for all 3 tasks,
+Runs an LLM agent against the Greenhouse Environment for all benchmark tasks,
 using the OpenAI API client. Produces structured [START], [STEP], [END]
 logs for evaluation scoring.
 
@@ -26,7 +26,7 @@ import json
 import os
 import sys
 import textwrap
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Path injection: Ensure local greenhouse module is found even if not installed
 sys.path.append(os.getcwd())
@@ -193,7 +193,7 @@ def parse_action(text: str) -> dict:
     }
 
 
-def get_model_action(client: any, obs_data: dict,
+def get_model_action(client: Any, obs_data: dict,
                      history: List[str]) -> dict:
     """Query the LLM for a greenhouse control action."""
     user_prompt = build_user_prompt(obs_data)
@@ -213,8 +213,7 @@ def get_model_action(client: any, obs_data: dict,
         )
         text = (completion.choices[0].message.content or "").strip()
         return parse_action(text)
-    except Exception as exc:
-        print(f"[DEBUG] Model request failed: {exc}", flush=True)
+    except Exception:
         return parse_action("")  # Return defaults
 
 
@@ -233,7 +232,6 @@ async def run_task(task: dict) -> dict:
         from openai import OpenAI
         from greenhouse import GreenhouseEnv, GreenhouseAction
     except ImportError as e:
-        print(f"[FATAL] Missing dependencies: {e}", flush=True)
         log_step(step=0, action="import_error", reward=0.0, done=True, error=str(e))
         log_end(success=False, steps=0, score=0.0, rewards=[])
         return {"task_id": task_id, "score": 0.0, "steps": 0, "success": False, "rewards": []}
@@ -252,7 +250,6 @@ async def run_task(task: dict) -> dict:
              
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     except Exception as exc:
-        print(f"[FATAL] Failed to initialize OpenAI client: {exc}", flush=True)
         log_step(step=0, action="auth_error", reward=0.0, done=True, error=str(exc))
         log_end(success=False, steps=0, score=0.0, rewards=[])
         return {"task_id": task_id, "score": 0.0, "steps": 0, "success": False, "rewards": []}
@@ -262,8 +259,6 @@ async def run_task(task: dict) -> dict:
         # Connect to environment using preferred image name
         env = await GreenhouseEnv.from_docker_image(IMAGE_NAME)
     except Exception as exc:
-        print(f"[DEBUG] Failed to initialize environment connection: {exc}", flush=True)
-        # Emit logs to satisfy validator
         log_step(step=0, action="connection_failure", reward=0.0, done=True, error=str(exc))
         log_end(success=False, steps=0, score=0.0, rewards=[])
         return {
@@ -275,7 +270,7 @@ async def run_task(task: dict) -> dict:
         }
 
     try:
-        result = await env.reset()
+        result = await env.reset(task_id=task_id)
         obs = result.observation
 
         # Build obs_data dict from observation
@@ -287,7 +282,7 @@ async def run_task(task: dict) -> dict:
 
             # Get action from LLM
             action_dict = get_model_action(client, obs_data, history)
-            action_str = json.dumps(action_dict)
+            action_str = json.dumps(action_dict, separators=(",", ":"))
 
             # Execute action
             action = GreenhouseAction(**action_dict)
@@ -330,7 +325,6 @@ async def run_task(task: dict) -> dict:
         success = score > 0.3  # Reasonable threshold
 
     except Exception as exc:
-        print(f"[DEBUG] Task execution failed: {exc}", flush=True)
         log_step(
             step=steps_taken + 1,
             action="execution_error",
@@ -388,38 +382,13 @@ def _obs_to_dict(obs) -> dict:
 
 
 async def main() -> None:
-    """Run all tasks and report baseline scores."""
-    results = []
+    """Run all tasks and emit only structured validator logs."""
     for task in TASKS:
-        print(f"\n--- Starting Task: {task['id']} ---", flush=True)
-        result = await run_task(task)
-        results.append(result)
-        print(f"Score: {result['score']:.3f}", flush=True)
-
-    # Summary
-    print("\n" + "=" * 70, flush=True)
-    print("  BASELINE SCORES", flush=True)
-    print("=" * 70, flush=True)
-    for r in results:
-        status = "✅" if r["success"] else "❌"
-        print(
-            f"  {status} {r['task_id']:25s} — "
-            f"score: {r['score']:.3f}  steps: {r['steps']}",
-            flush=True,
-        )
-
-    avg_score = sum(r["score"] for r in results) / max(len(results), 1)
-    print(f"\n  Average score: {avg_score:.3f}", flush=True)
-    print("=" * 70, flush=True)
+        await run_task(task)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except Exception as exc:
-        print(f"[FATAL] Script crashed with unhandled exception: {exc}", flush=True)
-        # Exit with code 0 to satisfy 'fail-fast' validators if we've already logged enough
-        # or exit with code 1 if it's truly a critical failure. 
-        # For this hackathon, a clean exit message is usually better.
-        import sys
-        sys.exit(0)
+    except Exception:
+        sys.exit(1)

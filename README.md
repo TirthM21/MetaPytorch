@@ -87,7 +87,7 @@ curl http://localhost:8000/health
 
 ## 🎮 Tasks
 
-The environment includes **3 progressively difficult tasks** with programmatic graders:
+The environment includes **4 progressively difficult tasks** with programmatic graders:
 
 ### Task 1: `maintain_temperature` (Easy)
 - **Duration**: 24 steps (1 simulated day)
@@ -106,6 +106,12 @@ The environment includes **3 progressively difficult tasks** with programmatic g
 - **Goal**: Maintain optimal conditions through extreme weather events
 - **Grading**: Score = 0.30×health + 0.25×growth + 0.25×avg_reward + 0.20×survival
 - **Challenge**: Heat waves, cold snaps, rapid weather shifts, long-horizon planning
+
+### Task 4: `resource_efficiency_master` (Expert)
+- **Duration**: 240 steps (10 simulated days)
+- **Goal**: Maximize growth under volatile weather and a strict energy budget
+- **Grading**: Score = 0.35×growth + 0.30×energy_efficiency + 0.20×health + 0.15×avg_reward
+- **Challenge**: Ultra-tight energy efficiency with long-horizon crop preservation
 
 All grader scores are in the **0.0 – 1.0** range.
 
@@ -192,6 +198,59 @@ reward = w_temp × temp_score
 ```
 
 Each score uses a linear interpolation between optimal (1.0) and survivable (0.0) ranges. Weights are task-specific to emphasize the relevant challenge.
+
+## 🧠 MDP Formulation
+
+The environment is modeled as a constrained Markov Decision Process designed to
+reduce reward hacking through strict actuator clamps, bounded physics, and
+continuous penalty tracking.
+
+### Action Space
+
+The agent controls four continuous actuators, each clamped to `[0.0, 1.0]`:
+
+- `heater_power`
+- `ventilation_rate`
+- `humidifier_level`
+- `artificial_lighting`
+
+### Observation Space And Physics
+
+The next state depends on the previous greenhouse state and external weather,
+not on static scripted responses.
+
+- **Thermal dynamics**: Newton-style heat exchange with outdoor coupling, HVAC input, and solar gain
+- **Hydrology**: Humidity and crop growth evolve under ventilation, humidification, evapotranspiration, and day/night effects
+- **VPD-like stress proxies**: Plant growth degrades when temperature, humidity, light, and CO2 drift from their Goldilocks ranges
+- **Energy efficiency**: HVAC and lighting costs are tracked every step and accumulated over the full episode
+
+### Reward Design
+
+The step reward is a bounded multi-objective control score:
+
+```text
+R_t = temperature_fit
+    + humidity_fit
+    + light_fit
+    + co2_fit
+    + energy_efficiency
+    + stability_bonus
+```
+
+The final task grader then converts the full trajectory into a strict score in
+`(0, 1)` using deterministic governance rules and task-specific scoring
+components.
+
+## 🛡️ Validation Strategy
+
+To improve compatibility with strict automated validators, the repo now
+contains explicit root-level task grader functions in [tasks.py](c:/Users/Tirtub/Desktop/Trident-Titans-Greenhouse-RL/tasks.py).
+
+- `tasks:grade_temp`
+- `tasks:grade_hum`
+- `tasks:grade_res`
+
+These are referenced from [openenv.yaml](c:/Users/Tirtub/Desktop/Trident-Titans-Greenhouse-RL/openenv.yaml) and mirrored in the runtime task registry.
 
 ## 🔬 Physics Simulation
 
@@ -286,6 +345,16 @@ The script:
 - Saves the best-performing model based on periodic evaluations.
 - Logs training metrics for TensorBoard visualization.
 
+### GRPO Prompt Preparation
+
+The repo now includes a GRPO-oriented prompt builder for language-model policy training:
+
+```bash
+python train_grpo.py --export-json grpo_prompts.json
+```
+
+This exports task-conditioned prompts and reward helpers for JSON-valid greenhouse actions.
+
 ---
 
 ## 🚀 Deployment
@@ -309,6 +378,7 @@ Your environment will be live at:
 | maintain_temperature | Easy | 24 | ~0.75 | Simple thermostat heuristic |
 | optimize_growth | Medium | 72 | ~0.55 | Balanced multi-objective |
 | weather_resilience | Hard | 168 | ~0.40 | Reactive weather response |
+| resource_efficiency_master | Expert | 240 | ~0.30 | Budget-aware long-horizon control |
 
 *Scores are approximate and will vary with the LLM model used.*
 
